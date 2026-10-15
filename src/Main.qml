@@ -17,6 +17,15 @@ ApplicationWindow {
 
     property string selectedKernelName: ""
     property bool installedOnly: false
+    readonly property real textScale: Math.max(1.0, Math.min(2.0, Number(appSettings.textScale) || 1.0))
+
+    function scaledFont(baseSize) { return Math.round(baseSize * textScale) }
+
+    Settings {
+        id: appSettings
+        category: "Accessibility"
+        property real textScale: 1.0
+    }
 
     QtObject {
         id: themeColors
@@ -27,24 +36,66 @@ ApplicationWindow {
                            a.b + (b.b - a.b) * amount, 1.0)
         }
 
+        function linearChannel(value) {
+            return value <= 0.04045 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4)
+        }
+
+        function luminance(color) {
+            return 0.2126 * linearChannel(color.r)
+                 + 0.7152 * linearChannel(color.g)
+                 + 0.0722 * linearChannel(color.b)
+        }
+
+        function contrastRatio(a, b) {
+            var first = luminance(a)
+            var second = luminance(b)
+            return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05)
+        }
+
+        function readableForeground(preferred, background) {
+            if (contrastRatio(preferred, background) >= 4.5)
+                return preferred
+
+            var black = Qt.color("#000000")
+            var white = Qt.color("#ffffff")
+            var target = contrastRatio(black, background) >= contrastRatio(white, background) ? black : white
+            var low = 0.0
+            var high = 1.0
+            for (var i = 0; i < 16; ++i) {
+                var amount = (low + high) / 2
+                var candidate = mix(preferred, target, amount)
+                if (contrastRatio(candidate, background) >= 4.5)
+                    high = amount
+                else
+                    low = amount
+            }
+            return mix(preferred, target, high)
+        }
+
         readonly property color window: theme.windowBg
         readonly property color view: theme.viewBg
         readonly property color surface: theme.cardBg
         readonly property color toolbar: theme.headerbarBg
         readonly property color popover: theme.popoverBg
-        readonly property color text: theme.windowFg
-        readonly property color muted: mix(theme.windowFg, theme.windowBg, 0.38)
-        readonly property color faint: mix(theme.windowFg, theme.windowBg, 0.62)
+        readonly property color text: readableForeground(theme.windowFg, theme.windowBg)
+        // Keep secondary and disabled text legible across system themes.
+        // Establish hierarchy with size/weight instead of fading text.
+        readonly property color muted: readableForeground(theme.windowFg, theme.viewBg)
+        readonly property color faint: readableForeground(theme.windowFg, theme.viewBg)
         readonly property color border: mix(theme.windowBg, theme.windowFg, 0.20)
         readonly property color strongBorder: mix(theme.windowBg, theme.windowFg, 0.34)
         readonly property color hover: mix(theme.cardBg, theme.windowFg, 0.08)
         readonly property color selected: theme.accentBg
-        readonly property color selectedText: theme.accentFg
+        readonly property color selectedText: readableForeground(theme.accentFg, theme.accentBg)
         readonly property color error: theme.errorBg
-        readonly property color errorText: theme.errorFg
+        readonly property color errorText: readableForeground(theme.errorFg, theme.cardBg)
+        readonly property color errorBannerText: readableForeground(theme.errorFg, theme.errorBg)
+        readonly property color errorViewText: readableForeground(theme.errorFg, theme.viewBg)
         readonly property color success: "#3a9b67"
         readonly property color warning: "#d9822b"
         readonly property color info: mix(theme.accentBg, theme.windowBg, 0.12)
+        readonly property color infoText: readableForeground(theme.accentFg, info)
+        readonly property color warningText: readableForeground(warning, theme.cardBg)
     }
 
     readonly property var filteredKernels: {
@@ -133,8 +184,8 @@ ApplicationWindow {
     component ToolbarAction: Button {
         id: toolbarAction
         property string symbol: ""
-        implicitWidth: 94
-        implicitHeight: 62
+        implicitWidth: 94 * window.textScale
+        implicitHeight: 62 * window.textScale
         padding: 0
         hoverEnabled: true
         focusPolicy: Qt.StrongFocus
@@ -147,14 +198,14 @@ ApplicationWindow {
                 text: toolbarAction.symbol
                 color: toolbarAction.enabled ? themeColors.text : themeColors.faint
                 font.family: "0xProto Nerd Font"
-                font.pixelSize: 20
+                font.pixelSize: window.scaledFont(20)
                 horizontalAlignment: Text.AlignHCenter
             }
             Text {
                 width: parent.width
                 text: toolbarAction.text
                 color: toolbarAction.enabled ? themeColors.text : themeColors.faint
-                font.pixelSize: 13
+                font.pixelSize: window.scaledFont(14)
                 horizontalAlignment: Text.AlignHCenter
                 elide: Text.ElideRight
             }
@@ -176,9 +227,9 @@ ApplicationWindow {
         id: flatButton
         property bool primary: false
         property bool destructive: false
-        implicitHeight: 36
-        leftPadding: 14
-        rightPadding: 14
+        implicitHeight: 40 * window.textScale
+        leftPadding: 16 * window.textScale
+        rightPadding: 16 * window.textScale
         hoverEnabled: true
         focusPolicy: Qt.StrongFocus
         Accessible.name: text
@@ -187,9 +238,9 @@ ApplicationWindow {
             text: flatButton.text
             color: !flatButton.enabled ? themeColors.faint
                  : flatButton.primary ? themeColors.selectedText
-                 : flatButton.destructive ? themeColors.error
+                 : flatButton.destructive ? themeColors.errorText
                  : themeColors.text
-            font.pixelSize: 13
+            font.pixelSize: window.scaledFont(14)
             font.weight: flatButton.primary ? Font.DemiBold : Font.Normal
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
@@ -246,6 +297,27 @@ ApplicationWindow {
                 onTriggered: window.refreshKernels()
             }
             MenuItem { text: qsTr("Activity Log"); onTriggered: logDialog.open() }
+            Menu {
+                title: qsTr("Text Size (%1%)").arg(Math.round(window.textScale * 100))
+                Repeater {
+                    model: [1.0, 1.25, 1.5, 1.75, 2.0]
+                    delegate: MenuItem {
+                        required property var modelData
+                        text: qsTr("%1%").arg(Math.round(modelData * 100))
+                        checkable: true
+                        checked: Math.abs(window.textScale - modelData) < 0.01
+                        onTriggered: appSettings.textScale = modelData
+                    }
+                }
+            }
+        }
+        Menu {
+            title: qsTr("Kernel")
+            MenuItem {
+                text: qsTr("Remove Old Kernels…")
+                enabled: !bridge.busy && bridge.kernels.length > 0
+                onTriggered: purgeDialog.open()
+            }
         }
         Menu {
             title: qsTr("Help")
@@ -257,7 +329,7 @@ ApplicationWindow {
             contentItem: Text {
                 text: menuItem.text
                 color: themeColors.text
-                font.pixelSize: 13
+                font.pixelSize: window.scaledFont(14)
                 verticalAlignment: Text.AlignVCenter
             }
             background: Rectangle { color: menuItem.highlighted ? themeColors.hover : "transparent" }
@@ -274,6 +346,7 @@ ApplicationWindow {
         enabled: !bridge.busy
         onActivated: window.refreshKernels()
     }
+    Shortcut { sequence: "Ctrl+0"; onActivated: appSettings.textScale = 1.0 }
 
     ColumnLayout {
         anchors.fill: parent
@@ -281,7 +354,7 @@ ApplicationWindow {
 
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: 74
+            Layout.preferredHeight: 74 * window.textScale
             color: themeColors.toolbar
 
             Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: themeColors.border }
@@ -318,8 +391,6 @@ ApplicationWindow {
                     }
                 }
 
-                ToolbarAction { symbol: "\uf15c"; text: qsTr("Logs"); onClicked: logDialog.open() }
-
                 Rectangle {
                     Layout.preferredWidth: 1
                     Layout.preferredHeight: 48
@@ -328,12 +399,7 @@ ApplicationWindow {
                     color: themeColors.border
                 }
 
-                ToolbarAction {
-                    symbol: "\uf1f8"
-                    text: qsTr("Remove Old")
-                    enabled: !bridge.busy
-                    onClicked: purgeDialog.open()
-                }
+                ToolbarAction { symbol: "\uf15c"; text: qsTr("Logs"); onClicked: logDialog.open() }
 
                 Item { Layout.fillWidth: true }
             }
@@ -341,7 +407,7 @@ ApplicationWindow {
 
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: 58
+            Layout.preferredHeight: 58 * window.textScale
             color: bridge.statusIsError ? themeColors.error : themeColors.info
 
             RowLayout {
@@ -352,9 +418,9 @@ ApplicationWindow {
 
                 Text {
                     text: bridge.statusIsError ? "\uf071" : "\uf05a"
-                    color: bridge.statusIsError ? themeColors.errorText : themeColors.selectedText
+                    color: bridge.statusIsError ? themeColors.errorBannerText : themeColors.infoText
                     font.family: "0xProto Nerd Font"
-                    font.pixelSize: 19
+                    font.pixelSize: window.scaledFont(19)
                 }
 
                 ColumnLayout {
@@ -365,8 +431,8 @@ ApplicationWindow {
                         text: bridge.statusIsError
                               ? qsTr("The last kernel operation reported an error")
                               : qsTr("Running kernel: %1").arg(bridge.activeKernelVersion || qsTr("detecting…"))
-                        color: bridge.statusIsError ? themeColors.errorText : themeColors.selectedText
-                        font.pixelSize: 14
+                        color: bridge.statusIsError ? themeColors.errorBannerText : themeColors.infoText
+                        font.pixelSize: window.scaledFont(14)
                         font.weight: Font.DemiBold
                         elide: Text.ElideRight
                     }
@@ -375,9 +441,8 @@ ApplicationWindow {
                         text: bridge.statusMessage !== ""
                               ? bridge.statusMessage
                               : qsTr("Select a kernel to inspect its details and available actions.")
-                        color: bridge.statusIsError ? themeColors.errorText : themeColors.selectedText
-                        opacity: 0.88
-                        font.pixelSize: 12
+                        color: bridge.statusIsError ? themeColors.errorBannerText : themeColors.infoText
+                        font.pixelSize: window.scaledFont(14)
                         elide: Text.ElideRight
                     }
                 }
@@ -409,14 +474,14 @@ ApplicationWindow {
                     Text {
                         text: qsTr("Linux kernels")
                         color: themeColors.text
-                        font.pixelSize: 17
+                        font.pixelSize: window.scaledFont(17)
                         font.weight: Font.DemiBold
                     }
                     Text {
                         text: qsTr("%1 kernels · %2 installed")
                               .arg(bridge.kernels.length).arg(window.installedKernelCount)
                         color: themeColors.muted
-                        font.pixelSize: 12
+                        font.pixelSize: window.scaledFont(14)
                     }
                 }
 
@@ -432,7 +497,7 @@ ApplicationWindow {
                     placeholderTextColor: themeColors.muted
                     selectionColor: themeColors.selected
                     selectedTextColor: themeColors.selectedText
-                    font.pixelSize: 13
+                    font.pixelSize: window.scaledFont(14)
                     Accessible.name: qsTr("Search kernels")
                     onTextChanged: window.selectFirstVisibleKernel(true)
 
@@ -458,7 +523,7 @@ ApplicationWindow {
 
                     Rectangle {
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 40
+                            Layout.preferredHeight: 40 * window.textScale
                         color: themeColors.surface
                         Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: themeColors.border }
 
@@ -468,15 +533,15 @@ ApplicationWindow {
                             anchors.leftMargin: 10
                             anchors.rightMargin: 10
 
-                            readonly property bool showType: window.width >= 980
-                            readonly property bool showSize: window.width >= 900
-                            readonly property bool showInstalled: window.width >= 1080
-                            readonly property real statusWidth: 112
-                            readonly property real gap: 12
-                            readonly property real versionWidth: 150
-                            readonly property real typeWidth: 118
-                            readonly property real sizeWidth: 76
-                            readonly property real installedWidth: 112
+                            readonly property bool showType: window.width >= 980 * window.textScale
+                            readonly property bool showSize: window.width >= 900 * window.textScale
+                            readonly property bool showInstalled: window.width >= 1080 * window.textScale
+                            readonly property real statusWidth: 154 * window.textScale
+                            readonly property real gap: 12 * window.textScale
+                            readonly property real versionWidth: 150 * window.textScale
+                            readonly property real typeWidth: 118 * window.textScale
+                            readonly property real sizeWidth: 76 * window.textScale
+                            readonly property real installedWidth: 112 * window.textScale
                             readonly property real trailingWidth: versionWidth
                                 + (showType ? gap + typeWidth : 0)
                                 + (showSize ? gap + sizeWidth : 0)
@@ -485,12 +550,12 @@ ApplicationWindow {
                             readonly property real kernelX: statusWidth + gap
                             readonly property real kernelWidth: Math.max(80, versionX - gap - kernelX)
 
-                            Text { x: 0; width: headerColumns.statusWidth; anchors.verticalCenter: parent.verticalCenter; text: qsTr("Status"); color: themeColors.muted; font.pixelSize: 12; font.weight: Font.DemiBold; elide: Text.ElideRight }
-                            Text { x: headerColumns.kernelX; width: headerColumns.kernelWidth; anchors.verticalCenter: parent.verticalCenter; text: qsTr("Kernel"); color: themeColors.muted; font.pixelSize: 12; font.weight: Font.DemiBold; horizontalAlignment: Text.AlignLeft; elide: Text.ElideRight }
-                            Text { x: headerColumns.versionX; width: headerColumns.versionWidth; anchors.verticalCenter: parent.verticalCenter; text: qsTr("Version"); color: themeColors.muted; font.pixelSize: 12; font.weight: Font.DemiBold; elide: Text.ElideRight }
-                            Text { visible: headerColumns.showType; x: headerColumns.versionX + headerColumns.versionWidth + headerColumns.gap; width: headerColumns.typeWidth; anchors.verticalCenter: parent.verticalCenter; text: qsTr("Type"); color: themeColors.muted; font.pixelSize: 12; font.weight: Font.DemiBold; elide: Text.ElideRight }
-                            Text { visible: headerColumns.showSize; x: headerColumns.versionX + headerColumns.versionWidth + headerColumns.gap + (headerColumns.showType ? headerColumns.typeWidth + headerColumns.gap : 0); width: headerColumns.sizeWidth; anchors.verticalCenter: parent.verticalCenter; text: qsTr("Size"); color: themeColors.muted; font.pixelSize: 12; font.weight: Font.DemiBold; elide: Text.ElideRight }
-                            Text { visible: headerColumns.showInstalled; x: headerColumns.versionX + headerColumns.versionWidth + headerColumns.gap + (headerColumns.showType ? headerColumns.typeWidth + headerColumns.gap : 0) + (headerColumns.showSize ? headerColumns.sizeWidth + headerColumns.gap : 0); width: headerColumns.installedWidth; anchors.verticalCenter: parent.verticalCenter; text: qsTr("Installed"); color: themeColors.muted; font.pixelSize: 12; font.weight: Font.DemiBold; elide: Text.ElideRight }
+                            Text { x: 0; width: headerColumns.statusWidth; anchors.verticalCenter: parent.verticalCenter; text: qsTr("Status"); color: themeColors.muted; font.pixelSize: window.scaledFont(14); font.weight: Font.DemiBold; elide: Text.ElideRight }
+                            Text { x: headerColumns.kernelX; width: headerColumns.kernelWidth; anchors.verticalCenter: parent.verticalCenter; text: qsTr("Kernel"); color: themeColors.muted; font.pixelSize: window.scaledFont(14); font.weight: Font.DemiBold; horizontalAlignment: Text.AlignLeft; elide: Text.ElideRight }
+                            Text { x: headerColumns.versionX; width: headerColumns.versionWidth; anchors.verticalCenter: parent.verticalCenter; text: qsTr("Version"); color: themeColors.muted; font.pixelSize: window.scaledFont(14); font.weight: Font.DemiBold; elide: Text.ElideRight }
+                            Text { visible: headerColumns.showType; x: headerColumns.versionX + headerColumns.versionWidth + headerColumns.gap; width: headerColumns.typeWidth; anchors.verticalCenter: parent.verticalCenter; text: qsTr("Type"); color: themeColors.muted; font.pixelSize: window.scaledFont(14); font.weight: Font.DemiBold; elide: Text.ElideRight }
+                            Text { visible: headerColumns.showSize; x: headerColumns.versionX + headerColumns.versionWidth + headerColumns.gap + (headerColumns.showType ? headerColumns.typeWidth + headerColumns.gap : 0); width: headerColumns.sizeWidth; anchors.verticalCenter: parent.verticalCenter; text: qsTr("Size"); color: themeColors.muted; font.pixelSize: window.scaledFont(14); font.weight: Font.DemiBold; elide: Text.ElideRight }
+                            Text { visible: headerColumns.showInstalled; x: headerColumns.versionX + headerColumns.versionWidth + headerColumns.gap + (headerColumns.showType ? headerColumns.typeWidth + headerColumns.gap : 0) + (headerColumns.showSize ? headerColumns.sizeWidth + headerColumns.gap : 0); width: headerColumns.installedWidth; anchors.verticalCenter: parent.verticalCenter; text: qsTr("Installed"); color: themeColors.muted; font.pixelSize: window.scaledFont(14); font.weight: Font.DemiBold; elide: Text.ElideRight }
                         }
                     }
 
@@ -516,11 +581,9 @@ ApplicationWindow {
                             delegate: ItemDelegate {
                                 id: kernelRow
                                 width: kernelList.width
-                                height: 52
+                                height: 56 * window.textScale
                                 hoverEnabled: true
                                 focusPolicy: Qt.StrongFocus
-                                Accessible.name: qsTr("Kernel %1, version %2").arg(modelData.name).arg(modelData.version)
-
                                 readonly property bool running: window.kernelIsRunning(modelData)
                                 readonly property bool defaultKernel: window.kernelIsDefault(modelData)
                                 readonly property bool selected: window.selectedKernelName === modelData.name
@@ -528,6 +591,11 @@ ApplicationWindow {
                                                                      : defaultKernel ? qsTr("Default")
                                                                      : modelData.installed ? qsTr("Installed")
                                                                                            : qsTr("Available")
+                                Accessible.name: qsTr("Kernel %1, version %2, status: %3%4")
+                                    .arg(modelData.name || qsTr("Unnamed kernel"))
+                                    .arg(modelData.version || "—").arg(stateLabel)
+                                    .arg((running || defaultKernel) ? qsTr(", installed") : "")
+                                Accessible.selected: selected
 
                                 onClicked: {
                                     window.selectedKernelName = modelData.name
@@ -554,17 +622,17 @@ ApplicationWindow {
 
                                 contentItem: Item {
                                     id: rowColumns
-                                    implicitHeight: 52
+                                    implicitHeight: 56 * window.textScale
 
-                                    readonly property bool showType: window.width >= 980
-                                    readonly property bool showSize: window.width >= 900
-                                    readonly property bool showInstalled: window.width >= 1080
-                                    readonly property real statusWidth: 112
-                                    readonly property real gap: 12
-                                    readonly property real versionWidth: 150
-                                    readonly property real typeWidth: 118
-                                    readonly property real sizeWidth: 76
-                                    readonly property real installedWidth: 112
+                                    readonly property bool showType: window.width >= 980 * window.textScale
+                                    readonly property bool showSize: window.width >= 900 * window.textScale
+                                    readonly property bool showInstalled: window.width >= 1080 * window.textScale
+                                    readonly property real statusWidth: 154 * window.textScale
+                                    readonly property real gap: 12 * window.textScale
+                                    readonly property real versionWidth: 150 * window.textScale
+                                    readonly property real typeWidth: 118 * window.textScale
+                                    readonly property real sizeWidth: 76 * window.textScale
+                                    readonly property real installedWidth: 112 * window.textScale
                                     readonly property real trailingWidth: versionWidth
                                         + (showType ? gap + typeWidth : 0)
                                         + (showSize ? gap + sizeWidth : 0)
@@ -590,16 +658,26 @@ ApplicationWindow {
                                             border.color: kernelRow.selected ? themeColors.selectedText : themeColors.strongBorder
                                             border.width: modelData.installed ? 0 : 1
                                         }
-                                        Text {
+                                        Column {
                                             anchors.left: statusDot.right
                                             anchors.leftMargin: 7
                                             anchors.right: parent.right
                                             anchors.verticalCenter: parent.verticalCenter
-                                            text: kernelRow.stateLabel
-                                            color: kernelRow.selected ? themeColors.selectedText : themeColors.text
-                                            font.pixelSize: 12
-                                            font.weight: (kernelRow.running || kernelRow.defaultKernel) ? Font.DemiBold : Font.Normal
-                                            elide: Text.ElideRight
+                                            spacing: 1
+                                            Text {
+                                                text: kernelRow.stateLabel
+                                                color: kernelRow.selected ? themeColors.selectedText : themeColors.text
+                                                font.pixelSize: window.scaledFont(14)
+                                                font.weight: (kernelRow.running || kernelRow.defaultKernel) ? Font.DemiBold : Font.Normal
+                                                elide: Text.ElideRight
+                                            }
+                                            Text {
+                                                visible: kernelRow.running || kernelRow.defaultKernel
+                                                text: qsTr("Installed")
+                                                color: kernelRow.selected ? themeColors.selectedText : themeColors.muted
+                                                font.pixelSize: window.scaledFont(13)
+                                                elide: Text.ElideRight
+                                            }
                                         }
                                     }
                                     Text {
@@ -608,7 +686,7 @@ ApplicationWindow {
                                         anchors.verticalCenter: parent.verticalCenter
                                         text: modelData.name || qsTr("Unnamed kernel")
                                         color: kernelRow.selected ? themeColors.selectedText : themeColors.text
-                                        font.pixelSize: 13
+                                        font.pixelSize: window.scaledFont(14)
                                         font.weight: Font.DemiBold
                                         horizontalAlignment: Text.AlignLeft
                                         elide: Text.ElideRight
@@ -619,7 +697,7 @@ ApplicationWindow {
                                         anchors.verticalCenter: parent.verticalCenter
                                         text: modelData.version || "—"
                                         color: kernelRow.selected ? themeColors.selectedText : themeColors.text
-                                        font.pixelSize: 12
+                                        font.pixelSize: window.scaledFont(13)
                                         elide: Text.ElideRight
                                     }
                                     Text {
@@ -629,7 +707,7 @@ ApplicationWindow {
                                         anchors.verticalCenter: parent.verticalCenter
                                         text: modelData.category || modelData.type || "—"
                                         color: kernelRow.selected ? themeColors.selectedText : themeColors.muted
-                                        font.pixelSize: 12
+                                        font.pixelSize: window.scaledFont(13)
                                         elide: Text.ElideRight
                                     }
                                     Text {
@@ -639,7 +717,7 @@ ApplicationWindow {
                                         anchors.verticalCenter: parent.verticalCenter
                                         text: modelData.size || "—"
                                         color: kernelRow.selected ? themeColors.selectedText : themeColors.muted
-                                        font.pixelSize: 12
+                                        font.pixelSize: window.scaledFont(14)
                                         elide: Text.ElideRight
                                     }
                                     Text {
@@ -649,7 +727,7 @@ ApplicationWindow {
                                         anchors.verticalCenter: parent.verticalCenter
                                         text: modelData.installDate || (modelData.installed ? qsTr("Installed") : "—")
                                         color: kernelRow.selected ? themeColors.selectedText : themeColors.muted
-                                        font.pixelSize: 12
+                                        font.pixelSize: window.scaledFont(14)
                                         elide: Text.ElideRight
                                     }
                                 }
@@ -675,7 +753,7 @@ ApplicationWindow {
                                       : window.installedOnly ? qsTr("No installed kernels are visible")
                                                              : qsTr("No kernels were found")
                                 color: themeColors.text
-                                font.pixelSize: 16
+                                font.pixelSize: window.scaledFont(16)
                                 font.weight: Font.DemiBold
                                 horizontalAlignment: Text.AlignHCenter
                                 wrapMode: Text.WordWrap
@@ -687,7 +765,7 @@ ApplicationWindow {
                                       : kernelSearch.text.trim().length > 0 ? qsTr("Clear the search or try a shorter version number.")
                                                                           : qsTr("Refresh the list to scan the system again.")
                                 color: themeColors.muted
-                                font.pixelSize: 13
+                                font.pixelSize: window.scaledFont(14)
                                 horizontalAlignment: Text.AlignHCenter
                                 wrapMode: Text.WordWrap
                             }
@@ -710,7 +788,7 @@ ApplicationWindow {
 
             Rectangle {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 190
+                Layout.preferredHeight: 190 * window.textScale
                 color: themeColors.surface
                 border.color: themeColors.border
                 border.width: 1
@@ -722,7 +800,7 @@ ApplicationWindow {
                     TabBar {
                         id: detailTabs
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 38
+                        Layout.preferredHeight: 38 * window.textScale
                         background: Rectangle {
                             color: themeColors.surface
                             Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: themeColors.border }
@@ -731,8 +809,8 @@ ApplicationWindow {
                         TabButton {
                             id: detailsTab
                             text: qsTr("Details")
-                            width: 100
-                            contentItem: Text { text: detailsTab.text; color: detailsTab.checked ? themeColors.text : themeColors.muted; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            width: 100 * window.textScale
+                            contentItem: Text { text: detailsTab.text; color: detailsTab.checked ? themeColors.text : themeColors.muted; font.pixelSize: window.scaledFont(14); horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                             background: Rectangle {
                                 color: detailsTab.hovered ? themeColors.hover : "transparent"
                                 Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: detailsTab.checked ? 2 : 0; color: themeColors.selected }
@@ -741,8 +819,8 @@ ApplicationWindow {
                         TabButton {
                             id: systemTab
                             text: qsTr("System")
-                            width: 100
-                            contentItem: Text { text: systemTab.text; color: systemTab.checked ? themeColors.text : themeColors.muted; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            width: 100 * window.textScale
+                            contentItem: Text { text: systemTab.text; color: systemTab.checked ? themeColors.text : themeColors.muted; font.pixelSize: window.scaledFont(14); horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                             background: Rectangle {
                                 color: systemTab.hovered ? themeColors.hover : "transparent"
                                 Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: systemTab.checked ? 2 : 0; color: themeColors.selected }
@@ -751,8 +829,8 @@ ApplicationWindow {
                         TabButton {
                             id: activityTab
                             text: qsTr("Activity")
-                            width: 100
-                            contentItem: Text { text: activityTab.text; color: activityTab.checked ? themeColors.text : themeColors.muted; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            width: 100 * window.textScale
+                            contentItem: Text { text: activityTab.text; color: activityTab.checked ? themeColors.text : themeColors.muted; font.pixelSize: window.scaledFont(14); horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                             background: Rectangle {
                                 color: activityTab.hovered ? themeColors.hover : "transparent"
                                 Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: activityTab.checked ? 2 : 0; color: themeColors.selected }
@@ -778,7 +856,7 @@ ApplicationWindow {
                                         Layout.fillWidth: true
                                         text: window.selectedKernel ? window.selectedKernel.name : qsTr("Select a kernel")
                                         color: themeColors.text
-                                        font.pixelSize: 16
+                                        font.pixelSize: window.scaledFont(16)
                                         font.weight: Font.DemiBold
                                         elide: Text.ElideRight
                                     }
@@ -791,7 +869,7 @@ ApplicationWindow {
                                                 .arg(window.selectedKernel.size || qsTr("Unknown size"))
                                               : qsTr("Choose a row above to inspect its package and boot status.")
                                         color: themeColors.muted
-                                        font.pixelSize: 12
+                                        font.pixelSize: window.scaledFont(14)
                                         elide: Text.ElideRight
                                     }
                                     Text {
@@ -804,8 +882,8 @@ ApplicationWindow {
                                                 : window.selectedKernel && window.selectedKernel.installed
                                                   ? qsTr("Installed on %1").arg(window.selectedKernel.installDate || qsTr("an unknown date"))
                                                   : qsTr("Available from the configured Void repositories.")
-                                        color: window.kernelIsRunning(window.selectedKernel) ? themeColors.warning : themeColors.muted
-                                        font.pixelSize: 12
+                                        color: window.kernelIsRunning(window.selectedKernel) ? themeColors.warningText : themeColors.muted
+                                        font.pixelSize: window.scaledFont(14)
                                         elide: Text.ElideRight
                                     }
                                 }
@@ -846,14 +924,14 @@ ApplicationWindow {
                                 columns: window.width >= 980 ? 4 : 2
                                 columnSpacing: 22
                                 rowSpacing: 8
-                                Text { text: qsTr("Running kernel"); color: themeColors.muted; font.pixelSize: 12 }
-                                Text { Layout.fillWidth: true; text: bridge.activeKernelVersion || qsTr("Detecting…"); color: themeColors.text; font.pixelSize: 13; font.weight: Font.DemiBold; elide: Text.ElideRight }
-                                Text { text: qsTr("Default kernel"); color: themeColors.muted; font.pixelSize: 12 }
-                                Text { Layout.fillWidth: true; text: bridge.defaultKernel || qsTr("Not detected"); color: themeColors.text; font.pixelSize: 13; font.weight: Font.DemiBold; elide: Text.ElideRight }
-                                Text { text: qsTr("Bootloader"); color: themeColors.muted; font.pixelSize: 12 }
-                                Text { text: bridge.detectedBootloader || "—"; color: themeColors.text; font.pixelSize: 13 }
-                                Text { text: qsTr("CPU level"); color: themeColors.muted; font.pixelSize: 12 }
-                                Text { text: bridge.detectedCpuLevel || "—"; color: themeColors.text; font.pixelSize: 13 }
+                                Text { text: qsTr("Running kernel"); color: themeColors.muted; font.pixelSize: 13 }
+                                Text { Layout.fillWidth: true; text: bridge.activeKernelVersion || qsTr("Detecting…"); color: themeColors.text; font.pixelSize: 14; font.weight: Font.DemiBold; elide: Text.ElideRight }
+                                Text { text: qsTr("Default kernel"); color: themeColors.muted; font.pixelSize: 13 }
+                                Text { Layout.fillWidth: true; text: bridge.defaultKernel || qsTr("Not detected"); color: themeColors.text; font.pixelSize: 14; font.weight: Font.DemiBold; elide: Text.ElideRight }
+                                Text { text: qsTr("Bootloader"); color: themeColors.muted; font.pixelSize: 13 }
+                                Text { text: bridge.detectedBootloader || "—"; color: themeColors.text; font.pixelSize: 14 }
+                                Text { text: qsTr("CPU level"); color: themeColors.muted; font.pixelSize: 13 }
+                                Text { text: bridge.detectedCpuLevel || "—"; color: themeColors.text; font.pixelSize: 14 }
                             }
                         }
 
@@ -868,8 +946,8 @@ ApplicationWindow {
                                     Text {
                                         Layout.fillWidth: true
                                         text: bridge.statusMessage || qsTr("No operation has been reported yet.")
-                                        color: bridge.statusIsError ? themeColors.error : themeColors.text
-                                        font.pixelSize: 12
+                                        color: bridge.statusIsError ? themeColors.errorViewText : themeColors.text
+                                        font.pixelSize: window.scaledFont(13)
                                         elide: Text.ElideRight
                                     }
                                     FlatButton { text: qsTr("Open Full Log"); onClicked: logDialog.open() }
@@ -887,7 +965,7 @@ ApplicationWindow {
                                         text: bridge.logs.length > 0 ? bridge.logs : qsTr("The activity log is empty.")
                                         color: themeColors.muted
                                         font.family: "0xProto Nerd Font Mono"
-                                        font.pixelSize: 11
+                                        font.pixelSize: window.scaledFont(13)
                                         textFormat: Text.PlainText
                                         wrapMode: Text.WrapAnywhere
                                         elide: Text.ElideRight
@@ -902,7 +980,7 @@ ApplicationWindow {
 
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: bridge.busy || bridge.progress > 0 ? 38 : 32
+            Layout.preferredHeight: (bridge.busy || bridge.progress > 0 ? 38 : 32) * window.textScale
             color: themeColors.toolbar
             Rectangle { anchors.top: parent.top; width: parent.width; height: 1; color: themeColors.border }
             Rectangle {
@@ -920,9 +998,9 @@ ApplicationWindow {
                 anchors.rightMargin: 10
                 anchors.topMargin: bridge.busy || bridge.progress > 0 ? 4 : 0
                 spacing: 8
-                Text { text: bridge.busy ? qsTr("Working…") : qsTr("Ready"); color: bridge.busy ? themeColors.selected : themeColors.muted; font.pixelSize: 12; font.weight: Font.DemiBold }
-                Text { Layout.fillWidth: true; text: qsTr("%1 kernels shown").arg(window.filteredKernels.length); color: themeColors.muted; font.pixelSize: 12 }
-                Text { text: qsTr("Neko Kernel Manager %1").arg(Qt.application.version); color: themeColors.muted; font.pixelSize: 11 }
+                Text { text: bridge.busy ? qsTr("Working…") : qsTr("Ready"); color: bridge.busy ? themeColors.selected : themeColors.muted; font.pixelSize: 13; font.weight: Font.DemiBold }
+                Text { Layout.fillWidth: true; text: qsTr("%1 kernels shown").arg(window.filteredKernels.length); color: themeColors.muted; font.pixelSize: 13 }
+                Text { text: qsTr("Neko Kernel Manager %1").arg(Qt.application.version); color: themeColors.muted; font.pixelSize: 13 }
             }
         }
     }
@@ -936,7 +1014,6 @@ ApplicationWindow {
         modal: true
         focus: true
         title: qsTr("Remove kernel")
-        standardButtons: Dialog.Cancel | Dialog.Ok
         onAccepted: {
             if (kernelData)
                 bridge.removeKernel(kernelData.name, kernelData.type || "", kernelData.version || "")
@@ -948,8 +1025,20 @@ ApplicationWindow {
                     .arg(removeDialog.kernelData.name).arg(removeDialog.kernelData.version)
                   : ""
             color: themeColors.text
-            font.pixelSize: 13
+            font.pixelSize: window.scaledFont(14)
             wrapMode: Text.WordWrap
+        }
+        footer: DialogButtonBox {
+            alignment: Qt.AlignRight
+            FlatButton {
+                text: qsTr("Cancel")
+                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
+            }
+            FlatButton {
+                text: qsTr("Remove kernel")
+                destructive: true
+                DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
+            }
         }
         background: Rectangle { color: themeColors.popover; border.color: themeColors.border; border.width: 1; radius: 4 }
     }
@@ -962,14 +1051,25 @@ ApplicationWindow {
         modal: true
         focus: true
         title: qsTr("Remove old kernels")
-        standardButtons: Dialog.Cancel | Dialog.Ok
         onAccepted: bridge.vkpurge()
         Text {
             width: parent.width
             text: qsTr("Neko will run vkpurge to remove obsolete kernel versions and reclaim disk space. The running kernel will not be removed.")
             color: themeColors.text
-            font.pixelSize: 13
+            font.pixelSize: window.scaledFont(14)
             wrapMode: Text.WordWrap
+        }
+        footer: DialogButtonBox {
+            alignment: Qt.AlignRight
+            FlatButton {
+                text: qsTr("Cancel")
+                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
+            }
+            FlatButton {
+                text: qsTr("Purge old kernels")
+                destructive: true
+                DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
+            }
         }
         background: Rectangle { color: themeColors.popover; border.color: themeColors.border; border.width: 1; radius: 4 }
     }
@@ -1011,7 +1111,7 @@ ApplicationWindow {
                         selectionColor: themeColors.selected
                         selectedTextColor: themeColors.selectedText
                         font.family: "0xProto Nerd Font Mono"
-                        font.pixelSize: 12
+                        font.pixelSize: window.scaledFont(14)
                         textFormat: TextEdit.RichText
                         wrapMode: TextEdit.Wrap
                         background: null
@@ -1042,7 +1142,7 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     text: qsTr("Install or remove out-of-tree modules for the kernels on this system.")
                     color: themeColors.muted
-                    font.pixelSize: 12
+                    font.pixelSize: window.scaledFont(14)
                     wrapMode: Text.WordWrap
                 }
                 FlatButton { text: qsTr("Refresh"); enabled: !bridge.busy; onClicked: bridge.updateDkmsModules() }
@@ -1077,14 +1177,14 @@ ApplicationWindow {
                             ColumnLayout {
                                 Layout.fillWidth: true
                                 spacing: 2
-                                Text { Layout.fillWidth: true; text: modelData.name + " " + modelData.version; color: themeColors.text; font.pixelSize: 13; font.weight: Font.DemiBold; elide: Text.ElideRight }
+                                Text { Layout.fillWidth: true; text: modelData.name + " " + modelData.version; color: themeColors.text; font.pixelSize: 14; font.weight: Font.DemiBold; elide: Text.ElideRight }
                                 Text {
                                     Layout.fillWidth: true
                                     text: modelData.isDkmsPackage
                                           ? (modelData.packageInstalled ? qsTr("XBPS package installed; not registered in DKMS") : qsTr("Available from the XBPS repository"))
                                           : qsTr("Kernel %1 · %2").arg(modelData.kernel || "—").arg(modelData.arch || "—")
                                     color: themeColors.muted
-                                    font.pixelSize: 12
+                                    font.pixelSize: window.scaledFont(13)
                                     elide: Text.ElideRight
                                 }
                             }
@@ -1093,7 +1193,7 @@ ApplicationWindow {
                                 text: modelData.status || qsTr("unknown")
                                 color: modelData.status === "installed" ? themeColors.success
                                      : modelData.status === "unregistered" ? themeColors.warning : themeColors.muted
-                                font.pixelSize: 12
+                                font.pixelSize: window.scaledFont(13)
                                 font.weight: Font.DemiBold
                                 horizontalAlignment: Text.AlignRight
                                 elide: Text.ElideRight
@@ -1120,7 +1220,7 @@ ApplicationWindow {
                     visible: dkmsList.count === 0
                     spacing: 8
                     BusyIndicator { Layout.alignment: Qt.AlignHCenter; visible: bridge.busy; running: visible }
-                    Text { text: bridge.busy ? qsTr("Loading DKMS modules…") : qsTr("No DKMS modules were found"); color: themeColors.text; font.pixelSize: 13 }
+                    Text { text: bridge.busy ? qsTr("Loading DKMS modules…") : qsTr("No DKMS modules were found"); color: themeColors.text; font.pixelSize: 14 }
                 }
             }
         }
@@ -1145,11 +1245,11 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 text: qsTr("A graphical manager for installing, removing, and selecting Linux kernels and DKMS modules on Void Linux.")
                 color: themeColors.muted
-                font.pixelSize: 13
+                font.pixelSize: window.scaledFont(14)
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.WordWrap
             }
-            Text { Layout.fillWidth: true; text: qsTr("Version %1 · GPL-3.0-only · Qt 6 / QML / C++").arg(Qt.application.version); color: themeColors.muted; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter }
+            Text { Layout.fillWidth: true; text: qsTr("Version %1 · GPL-3.0-only · Qt 6 / QML / C++").arg(Qt.application.version); color: themeColors.muted; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter }
         }
         background: Rectangle { color: themeColors.popover; border.color: themeColors.border; border.width: 1; radius: 4 }
     }
